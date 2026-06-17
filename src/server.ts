@@ -1,5 +1,4 @@
 import "dotenv/config";
-import cors from "cors";
 import express from "express";
 import aiRoutes from "./routes/ai.routes.js";
 import docxRoutes from "./routes/docx.routes.js";
@@ -35,33 +34,55 @@ function getAllowedOrigins() {
 
 const allowedOrigins = getAllowedOrigins();
 
-const corsOptions: cors.CorsOptions = {
-  origin(origin, callback) {
-    if (!origin) {
-      callback(null, true);
+app.use((req, res, next) => {
+  const origin = typeof req.headers.origin === "string" ? normalizeOrigin(req.headers.origin) : "";
+  const isAllowed = !origin || allowedOrigins.includes(origin);
+
+  if (origin) {
+    console.log("[cors] request", {
+      method: req.method,
+      path: req.path,
+      origin,
+      isAllowed
+    });
+  }
+
+  if (origin && isAllowed) {
+    res.header("Access-Control-Allow-Origin", origin);
+    res.header("Vary", "Origin");
+  }
+
+  res.header("Access-Control-Allow-Methods", "GET,POST,OPTIONS");
+  res.header("Access-Control-Allow-Headers", "Content-Type, Authorization");
+
+  if (req.method === "OPTIONS") {
+    if (!isAllowed) {
+      console.error("[cors] blocked preflight", {
+        origin,
+        path: req.path,
+        allowedOrigins
+      });
+      res.status(403).json({ message: `Origin not allowed by CORS: ${origin}` });
       return;
     }
 
-    const normalizedOrigin = normalizeOrigin(origin);
-    if (allowedOrigins.includes(normalizedOrigin)) {
-      callback(null, true);
-      return;
-    }
+    res.status(204).end();
+    return;
+  }
 
+  if (origin && !isAllowed) {
     console.error("[cors] blocked origin", {
-      origin: normalizedOrigin,
+      origin,
+      path: req.path,
       allowedOrigins
     });
-    callback(new Error(`Origin not allowed by CORS: ${normalizedOrigin}`));
-  },
-  methods: ["GET", "POST", "OPTIONS"],
-  allowedHeaders: ["Content-Type", "Authorization"],
-  credentials: false,
-  optionsSuccessStatus: 204
-};
+    res.status(403).json({ message: `Origin not allowed by CORS: ${origin}` });
+    return;
+  }
 
-app.use(cors(corsOptions));
-app.options("*", cors(corsOptions));
+  next();
+});
+
 app.use(express.json({ limit: "5mb" }));
 
 app.get("/api/health", (_req, res) => {
