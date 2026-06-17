@@ -1,4 +1,5 @@
 import "dotenv/config";
+import { jsonrepair } from "jsonrepair";
 
 type ChatRole = "system" | "user" | "assistant";
 
@@ -83,10 +84,26 @@ export function parseJsonSafely<T>(raw: string): T {
         return JSON.parse(text.slice(firstObject, lastObject + 1)) as T;
       } catch (slicedError) {
         console.error("[openrouter] sliced json parse failed", slicedError);
+        try {
+          const repairedSliced = jsonrepair(text.slice(firstObject, lastObject + 1));
+          console.log("[openrouter] repaired sliced json successfully");
+          logLongText("[openrouter] repaired sliced json", repairedSliced);
+          return JSON.parse(repairedSliced) as T;
+        } catch (repairSlicedError) {
+          console.error("[openrouter] repaired sliced json parse failed", repairSlicedError);
+        }
       }
     }
 
     console.error("[openrouter] direct json parse failed", directError);
+    try {
+      const repaired = jsonrepair(text);
+      console.log("[openrouter] repaired raw json successfully");
+      logLongText("[openrouter] repaired raw json", repaired);
+      return JSON.parse(repaired) as T;
+    } catch (repairError) {
+      console.error("[openrouter] repaired raw json parse failed", repairError);
+    }
   }
 
   console.error("[openrouter] invalid json response metadata", {
