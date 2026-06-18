@@ -96,7 +96,16 @@ interface TemplatePlan {
   vanDungHsContent: string;
 }
 
+type QualityLabel = "yêu nước" | "nhân ái" | "chăm chỉ" | "trung thực" | "trách nhiệm";
+
 const TEMPLATE_PATH = path.resolve(process.cwd(), "templates", "lesson-plan-template.docx");
+const DEFAULT_ACTIVITY_NAMES = [
+  "KHỞI ĐỘNG",
+  "HÌNH THÀNH KIẾN THỨC MỚI",
+  "LUYỆN TẬP - THỰC HÀNH",
+  "VẬN DỤNG, TRẢI NGHIỆM"
+];
+const QUALITY_LABELS: QualityLabel[] = ["yêu nước", "nhân ái", "chăm chỉ", "trung thực", "trách nhiệm"];
 
 const LESSON_SYSTEM_PROMPT = `Bạn là giáo viên tiểu học nhiều kinh nghiệm, quen viết kế hoạch bài dạy để đồng nghiệp có thể in ra và dạy ngay.
 Bạn hiểu định hướng GDPT 2018 và cấu trúc kế hoạch bài dạy theo Công văn 2345/BGDĐT.
@@ -110,6 +119,8 @@ Quy tắc nội dung:
 - Mỗi kế hoạch có: weekNumber, lessonTitle, className, grade, subject, periods, prepareDate, teachDate.
 - Phần I gồm: specificCompetencies, generalCompetencies, qualities.
 - Phần II gồm: teacherMaterials, studentMaterials.
+- qualities phải có từ 2 đến 5 ý.
+- Mỗi ý trong qualities phải bắt đầu bằng đúng một trong 5 cụm sau trước dấu hai chấm: Yêu nước, Nhân ái, Chăm chỉ, Trung thực, Trách nhiệm.
 - Phần III luôn có đúng 4 hoạt động:
   1. KHỞI ĐỘNG
   2. HÌNH THÀNH KIẾN THỨC MỚI
@@ -119,18 +130,12 @@ Quy tắc nội dung:
 - objectives là mảng 1-3 ý ngắn, cụ thể, bám đúng việc học sinh cần đạt ở hoạt động đó.
 - procedure là mảng các bước tiến hành phía giáo viên theo đúng trình tự lên lớp, cụ thể và làm được ngay.
 - studentActions là mảng các phản hồi hoặc việc làm tương ứng của học sinh.
+- Số phần tử của procedure và studentActions phải bằng nhau, từng dòng tương ứng 1-1 theo cùng thứ tự hoạt động.
 - Tránh viết khuôn mẫu, lặp đi lặp lại một kiểu câu ở mọi dòng.
 - Không dùng câu rỗng như "tạo hứng thú học tập", "phát triển năng lực" nếu không gắn với việc làm cụ thể.
 - Với lớp 1, ưu tiên câu ngắn, thao tác rõ, nhắc đúng tư thế ngồi, cầm bút, trình bày vở khi phù hợp.
 - Nếu yêu cầu nói về rèn chữ, cần ưu tiên nét chữ, độ cao, độ rộng, điểm đặt bút, rê bút, dừng bút, giữ vở sạch và dùng tẩy đúng cách khi phù hợp.
 - Tất cả phần tử mảng là văn bản sạch, không thêm dấu đầu dòng thủ công như "-", "•", "–", "*".`;
-
-const DEFAULT_ACTIVITY_NAMES = [
-  "KHỞI ĐỘNG",
-  "HÌNH THÀNH KIẾN THỨC MỚI",
-  "LUYỆN TẬP - THỰC HÀNH",
-  "VẬN DỤNG, TRẢI NGHIỆM"
-];
 
 export function validateGenerateDocxInput(input: GenerateDocxInput) {
   if (!String(input.className ?? "").trim()) {
@@ -175,9 +180,11 @@ ${JSON.stringify(
 
 Yêu cầu đầu ra:
 - Viết như giáo viên đang soạn thật để in và dạy, không viết bóng bẩy.
+- qualities phải có 2-5 dòng, và cụm trước dấu hai chấm chỉ được là: Yêu nước, Nhân ái, Chăm chỉ, Trung thực, Trách nhiệm.
 - Trong mỗi hoạt động, phần objectives phải đủ để đưa vào mục "Mục tiêu", phần procedure phải đủ để đưa vào mục "Cách tiến hành".
 - Các dòng trong procedure nên có thứ tự triển khai rõ ràng.
 - Các dòng trong studentActions phải bám sát hoạt động thật của học sinh.
+- Số dòng trong procedure và studentActions phải bằng nhau, từng cặp dòng phải tương ứng nhau.
 
 Trả về đúng JSON:
 {
@@ -223,6 +230,8 @@ export function normalizeLessonPlans(rawPlans: unknown, input: GenerateDocxInput
   return Array.from({ length: count }, (_, index) => {
     const raw = (source[index] ?? {}) as AiLessonPlan;
     const weekNumber = Number(raw.weekNumber) || index + 1;
+    const periods = Number(raw.periods) || Number(input.periodsPerWeek) || 1;
+    const seedText = [input.className, input.subject, weekNumber, periods, input.teacherRequest].join("|");
     const activities = Array.isArray(raw.activities) ? raw.activities : [];
 
     return {
@@ -232,19 +241,19 @@ export function normalizeLessonPlans(rawPlans: unknown, input: GenerateDocxInput
       grade: cleanText(raw.grade) || cleanText(input.grade),
       subject: cleanText(raw.subject) || cleanText(input.subject),
       bookSeries: "",
-      periods: Number(raw.periods) || Number(input.periodsPerWeek) || 1,
+      periods,
       prepareDate: cleanText(raw.prepareDate) || input.prepareDate,
       teachDate: cleanText(raw.teachDate) || addDaysToIsoDate(input.firstTeachDate, index * 7),
       objectives: {
         specificCompetencies: cleanTextArray(raw.specificCompetencies ?? raw.objectives?.specificCompetencies),
         generalCompetencies: cleanTextArray(raw.generalCompetencies ?? raw.objectives?.generalCompetencies),
-        qualities: cleanTextArray(raw.qualities ?? raw.objectives?.qualities)
+        qualities: normalizeQualities(cleanTextArray(raw.qualities ?? raw.objectives?.qualities), seedText)
       },
       teachingMaterials: {
         teacher: cleanTextArray(raw.teacherMaterials ?? raw.teachingMaterials?.teacher),
         students: cleanTextArray(raw.studentMaterials ?? raw.teachingMaterials?.students)
       },
-      activities: normalizeActivities(activities),
+      activities: normalizeActivities(activities, periods, seedText),
       afterLessonAdjustment: ""
     };
   });
@@ -330,26 +339,34 @@ export function transformPlanForTemplate(plan: LessonPlan): TemplatePlan {
   };
 }
 
-function normalizeActivities(rawActivities: AiLessonActivity[]): LessonActivity[] {
-  const baseActivities = Array.from({ length: 4 }, (_, index) =>
-    normalizeActivity(rawActivities[index] ?? {}, index)
-  );
-
+function normalizeActivities(rawActivities: AiLessonActivity[], periods: number, seedText: string): LessonActivity[] {
+  const baseActivities = Array.from({ length: 4 }, (_, index) => normalizeActivity(rawActivities[index] ?? {}, index));
   const mapped = mapActivities(baseActivities);
-  return [mapped.khoiDong, mapped.hinhThanh, mapped.luyenTap, mapped.vanDung];
+  const ordered = [mapped.khoiDong, mapped.hinhThanh, mapped.luyenTap, mapped.vanDung];
+  const perPeriodMinutes = buildPerPeriodActivityMinutes(seedText);
+
+  return ordered.map((activity, index) => {
+    const aligned = alignActivityPairs(activity);
+    return {
+      ...activity,
+      ...aligned,
+      time: `${perPeriodMinutes[index] * periods} phút`
+    };
+  });
 }
 
 function normalizeActivity(raw: AiLessonActivity, index: number): LessonActivity {
   const mergedObjectives = cleanTextArray(raw.objectives);
   const fallbackObjective = cleanText(raw.objective);
   const mergedProcedure = [...cleanTextArray(raw.procedure), ...cleanTextArray(raw.teacherActions)];
+  const studentActions = cleanTextArray(raw.studentActions);
 
   if (!mergedObjectives.length && fallbackObjective) {
     mergedObjectives.push(fallbackObjective);
   }
 
   return {
-    time: cleanText(raw.time) || (index === 0 || index === 3 ? "5 phút" : "25 phút"),
+    time: "",
     name: cleanText(raw.name) || DEFAULT_ACTIVITY_NAMES[index] || `Hoạt động ${index + 1}`,
     objectives: mergedObjectives.length
       ? mergedObjectives
@@ -357,8 +374,8 @@ function normalizeActivity(raw: AiLessonActivity, index: number): LessonActivity
     procedure: mergedProcedure.length
       ? mergedProcedure
       : ["Giáo viên nêu nhiệm vụ, làm mẫu ngắn gọn và hướng dẫn học sinh thực hiện từng bước."],
-    studentActions: cleanTextArray(raw.studentActions).length
-      ? cleanTextArray(raw.studentActions)
+    studentActions: studentActions.length
+      ? studentActions
       : ["Học sinh lắng nghe, thực hiện nhiệm vụ và nêu kết quả."]
   };
 }
@@ -404,6 +421,186 @@ function buildStudentContent(activity: LessonActivity) {
 
 function prefixDash(items: string[]) {
   return cleanTextArray(items).map((item) => `- ${item}`);
+}
+
+function normalizeQualities(rawQualities: string[], seedText: string) {
+  const selectedLabels = pickQualityLabels(seedText);
+  const explicitDescriptions = new Map<QualityLabel, string>();
+  const rawDescriptions = rawQualities
+    .map((item) => {
+      const parsed = parseQualityItem(item);
+      if (parsed) {
+        explicitDescriptions.set(parsed.label, parsed.description);
+        return parsed.description;
+      }
+      return extractDescriptionOnly(item);
+    })
+    .filter(Boolean);
+
+  return selectedLabels.map((label, index) => {
+    const description = explicitDescriptions.get(label) || rawDescriptions[index] || defaultQualityDescription(label);
+    return `${formatQualityLabel(label)}: ${description}`;
+  });
+}
+
+function pickQualityLabels(seedText: string) {
+  const random = createSeededRandom(hashString(seedText) || 1);
+  const shuffled = [...QUALITY_LABELS];
+
+  for (let index = shuffled.length - 1; index > 0; index -= 1) {
+    const swapIndex = Math.floor(random() * (index + 1));
+    [shuffled[index], shuffled[swapIndex]] = [shuffled[swapIndex], shuffled[index]];
+  }
+
+  const count = 2 + Math.floor(random() * 4);
+  return shuffled.slice(0, count);
+}
+
+function parseQualityItem(item: string): { label: QualityLabel; description: string } | null {
+  const cleaned = cleanText(item);
+  const separatorIndex = cleaned.indexOf(":");
+  const rawLabel = separatorIndex >= 0 ? cleaned.slice(0, separatorIndex) : cleaned;
+  const label = normalizeQualityLabel(rawLabel);
+  if (!label) {
+    return null;
+  }
+
+  const description = cleanText(separatorIndex >= 0 ? cleaned.slice(separatorIndex + 1) : "");
+  return {
+    label,
+    description: description || defaultQualityDescription(label)
+  };
+}
+
+function extractDescriptionOnly(item: string) {
+  const cleaned = cleanText(item);
+  const separatorIndex = cleaned.indexOf(":");
+  return cleanText(separatorIndex >= 0 ? cleaned.slice(separatorIndex + 1) : cleaned);
+}
+
+function normalizeQualityLabel(value: string): QualityLabel | null {
+  const normalized = removeVietnameseMarks(value).toLowerCase();
+  const match = QUALITY_LABELS.find((label) => removeVietnameseMarks(label) === normalized);
+  return match ?? null;
+}
+
+function formatQualityLabel(label: QualityLabel) {
+  return `${label.charAt(0).toUpperCase()}${label.slice(1)}`;
+}
+
+function defaultQualityDescription(label: QualityLabel) {
+  switch (label) {
+    case "yêu nước":
+      return "Biết trân trọng tiếng Việt, giữ gìn nề nếp học tập và yêu quý sản phẩm học tập của mình.";
+    case "nhân ái":
+      return "Biết hỗ trợ bạn, lắng nghe bạn và động viên nhau trong quá trình học tập.";
+    case "chăm chỉ":
+      return "Kiên trì luyện tập, hoàn thành nhiệm vụ học tập cẩn thận và đều đặn.";
+    case "trung thực":
+      return "Tự giác nhận ra lỗi của mình khi làm bài và sửa bài đúng thực tế.";
+    case "trách nhiệm":
+    default:
+      return "Giữ gìn đồ dùng học tập, thực hiện bài đầy đủ và làm việc theo đúng hướng dẫn.";
+  }
+}
+
+function buildPerPeriodActivityMinutes(seedText: string) {
+  const random = createSeededRandom(hashString(`${seedText}|time`) || 1);
+  const khoiDong = 5 + Math.floor(random() * 3);
+  const vanDung = 5 + Math.floor(random() * 3);
+  const remaining = 35 - khoiDong - vanDung;
+  const hinhThanh = Math.floor(remaining / 2);
+  const luyenTap = remaining - hinhThanh;
+
+  return [khoiDong, hinhThanh, luyenTap, vanDung];
+}
+
+function alignActivityPairs(activity: LessonActivity) {
+  const sourceProcedures = cleanTextArray(activity.procedure);
+  const sourceStudentActions = cleanTextArray(activity.studentActions);
+  const maxLength = Math.max(sourceProcedures.length, sourceStudentActions.length, 1);
+  const procedure: string[] = [];
+  const studentActions: string[] = [];
+
+  for (let index = 0; index < maxLength; index += 1) {
+    const teacherStep =
+      sourceProcedures[index] ||
+      buildTeacherStepFromStudentAction(sourceStudentActions[index]) ||
+      "Giáo viên giao nhiệm vụ và theo dõi học sinh thực hiện.";
+    const studentStep =
+      sourceStudentActions[index] ||
+      buildStudentActionFromTeacherStep(teacherStep) ||
+      "Học sinh thực hiện theo hướng dẫn của giáo viên.";
+
+    procedure.push(cleanText(teacherStep));
+    studentActions.push(cleanText(studentStep));
+  }
+
+  return {
+    procedure,
+    studentActions
+  };
+}
+
+function buildStudentActionFromTeacherStep(step: string) {
+  const cleaned = cleanText(step);
+  const lowered = cleaned.toLowerCase();
+
+  if (/(nêu|đặt) câu hỏi/.test(lowered)) {
+    return "Học sinh lắng nghe và trả lời câu hỏi của giáo viên.";
+  }
+  if (/làm mẫu|viết mẫu|thị phạm/.test(lowered)) {
+    return "Học sinh quan sát mẫu và làm theo hướng dẫn.";
+  }
+  if (/nhận xét|sửa lỗi/.test(lowered)) {
+    return "Học sinh lắng nghe nhận xét và điều chỉnh bài làm của mình.";
+  }
+  if (/cho học sinh|yêu cầu học sinh|mời học sinh|hướng dẫn học sinh/.test(lowered)) {
+    const extracted =
+      cleaned
+        .replace(/^giáo viên\s*/i, "")
+        .replace(/^(cho|yêu cầu|mời|hướng dẫn)\s+học sinh\s*/i, "")
+        .trim() || "thực hiện nhiệm vụ được giao";
+    return `Học sinh ${lowercaseFirst(extracted)}`;
+  }
+
+  const normalized =
+    cleaned
+      .replace(/^giáo viên\s*/i, "")
+      .replace(/^gv\s*/i, "")
+      .replace(/^(hướng dẫn|nhắc|đề nghị|mời|yêu cầu)\s+/i, "")
+      .trim() || "thực hiện nhiệm vụ được giao";
+
+  return `Học sinh ${lowercaseFirst(normalized)}`;
+}
+
+function buildTeacherStepFromStudentAction(step: string) {
+  const cleaned = cleanText(step);
+  const normalized = cleaned.replace(/^học sinh\s*/i, "").trim() || "thực hiện nhiệm vụ được giao";
+  return `Giáo viên hướng dẫn học sinh ${lowercaseFirst(normalized)}`;
+}
+
+function createSeededRandom(seed: number) {
+  let current = seed >>> 0;
+  return () => {
+    current = (current + 0x6d2b79f5) >>> 0;
+    let temp = Math.imul(current ^ (current >>> 15), 1 | current);
+    temp ^= temp + Math.imul(temp ^ (temp >>> 7), 61 | temp);
+    return ((temp ^ (temp >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+function hashString(value: string) {
+  let hash = 0;
+  for (let index = 0; index < value.length; index += 1) {
+    hash = (hash * 31 + value.charCodeAt(index)) >>> 0;
+  }
+  return hash;
+}
+
+function lowercaseFirst(value: string) {
+  if (!value) return value;
+  return value.charAt(0).toLowerCase() + value.slice(1);
 }
 
 function cleanTextArray(value: unknown): string[] {
